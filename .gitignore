@@ -1,0 +1,19 @@
+# IDEs e editores
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Arquivos de build
+build/
+maze_solver
+*.o
+*.exe
+
+# Arquivos de saída do programa
+output.txt
+path.json
+
+# Arquivos do sistema
+.DS_Store
+Thumbs.db
