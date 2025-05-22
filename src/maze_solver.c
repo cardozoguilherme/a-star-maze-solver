@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
-#include <immintrin.h> // Para instruções SIMD
 #include <errno.h>
 
 // Constantes do labirinto
@@ -13,13 +12,7 @@
 #define PATH '.'
 #define EMPTY ' '
 
-// Constantes de otimização
-#define CACHE_LINE 64
-#define BITS_PER_WORD (sizeof(unsigned long) * 8)
-#define BIT_WORD_SIZE(n) (((n) + BITS_PER_WORD - 1) / BITS_PER_WORD)
-#define ALIGN __attribute__((aligned(CACHE_LINE)))
-
-// Estruturas de dados otimizadas
+// Estruturas de dados simplificadas
 typedef struct {
     short x, y;
 } Point;
@@ -28,169 +21,124 @@ typedef struct {
     Point pos;
     unsigned short g, h;
     int parent;
-} ALIGN Node;
+} Node;
+
+typedef struct {
+    Node heap[MAX_SIZE];
+    Node closed[MAX_SIZE];
+    char map[MAX_SIZE * MAX_SIZE];
+    char visited[MAX_SIZE * MAX_SIZE];
+    char open[MAX_SIZE * MAX_SIZE];
+    Point path[MAX_SIZE];
+    int width, height;
+    int heap_count, closed_count;
+    int path_size;
+} Maze;
 
 typedef struct {
     double solve_time;
     double total_time;
-} TimingInfo;
+} Timing;
 
-// Estado global do solucionador
-typedef struct {
-    Node ALIGN open_heap[MAX_SIZE];
-    Node ALIGN closed_list[MAX_SIZE];
-    unsigned char ALIGN maze_data[MAX_SIZE * MAX_SIZE];
-    unsigned long ALIGN closed_bits[BIT_WORD_SIZE(MAX_SIZE * MAX_SIZE)];
-    unsigned long ALIGN open_bits[BIT_WORD_SIZE(MAX_SIZE * MAX_SIZE)];
-    Point ALIGN path[MAX_SIZE];
-    int width, height;
-    int open_count, closed_count;
-    int path_size;
-} MazeSolver;
+// Direções de movimento (N, L, S, O)
+static const char dx[] = {0, 1, 0, -1};
+static const char dy[] = {-1, 0, 1, 0};
 
-// Lookup tables pré-calculadas
-static const char ALIGN dx[] = {0, 1, 0, -1};
-static const char ALIGN dy[] = {-1, 0, 1, 0};
-
-// Funções inline para manipulação de bits
-static inline int get_bit_index(const MazeSolver* solver, int x, int y) {
-    return y * solver->width + x;
-}
-
-static inline void set_bit(unsigned long* bits, int idx) {
-    __builtin_prefetch(bits + (idx / BITS_PER_WORD));
-    bits[idx / BITS_PER_WORD] |= 1UL << (idx % BITS_PER_WORD);
-}
-
-static inline void clear_bit(unsigned long* bits, int idx) {
-    bits[idx / BITS_PER_WORD] &= ~(1UL << (idx % BITS_PER_WORD));
-}
-
-static inline int test_bit(const unsigned long* bits, int idx) {
-    return (bits[idx / BITS_PER_WORD] >> (idx % BITS_PER_WORD)) & 1;
-}
-
-// Funções da heap binária
-static inline unsigned int calc_f(const Node* node) {
+// Funções heap
+static unsigned int calc_f(const Node* node) {
     return node->g + node->h;
 }
 
-static inline void heapify_up(MazeSolver* solver, int idx) {
-    Node temp = solver->open_heap[idx];
+static void heapify_up(Maze* maze, int idx) {
+    Node temp = maze->heap[idx];
     unsigned int f_temp = calc_f(&temp);
     
     while (idx > 0) {
-        int parent = (idx - 1) >> 1;
-        __builtin_prefetch(&solver->open_heap[parent]);
-        if (calc_f(&solver->open_heap[parent]) <= f_temp) break;
-        solver->open_heap[idx] = solver->open_heap[parent];
+        int parent = (idx - 1) / 2;
+        if (calc_f(&maze->heap[parent]) <= f_temp) break;
+        maze->heap[idx] = maze->heap[parent];
         idx = parent;
     }
-    solver->open_heap[idx] = temp;
+    maze->heap[idx] = temp;
 }
 
-static inline void heapify_down(MazeSolver* solver, int idx) {
-    Node temp = solver->open_heap[idx];
+static void heapify_down(Maze* maze, int idx) {
+    Node temp = maze->heap[idx];
     unsigned int f_temp = calc_f(&temp);
-    int half = solver->open_count >> 1;
+    int half = maze->heap_count / 2;
     
     while (idx < half) {
         int smallest = idx;
-        int left = (idx << 1) + 1;
+        int left = 2 * idx + 1;
         int right = left + 1;
         
-        __builtin_prefetch(&solver->open_heap[left]);
-        __builtin_prefetch(&solver->open_heap[right]);
-        
-        if (left < solver->open_count && calc_f(&solver->open_heap[left]) < f_temp)
+        if (left < maze->heap_count && calc_f(&maze->heap[left]) < f_temp)
             smallest = left;
             
-        if (right < solver->open_count) {
-            unsigned int f_right = calc_f(&solver->open_heap[right]);
-            if (f_right < (smallest == idx ? f_temp : calc_f(&solver->open_heap[left])))
+        if (right < maze->heap_count) {
+            unsigned int f_right = calc_f(&maze->heap[right]);
+            if (f_right < (smallest == idx ? f_temp : calc_f(&maze->heap[left])))
                 smallest = right;
         }
         
         if (smallest == idx) break;
-        solver->open_heap[idx] = solver->open_heap[smallest];
+        maze->heap[idx] = maze->heap[smallest];
         idx = smallest;
     }
-    solver->open_heap[idx] = temp;
+    maze->heap[idx] = temp;
 }
 
-// Funções de manipulação da lista aberta
-static inline void add_to_heap(MazeSolver* solver, Node node) {
-    __builtin_prefetch(&solver->open_heap[solver->open_count]);
-    solver->open_heap[solver->open_count] = node;
-    set_bit(solver->open_bits, get_bit_index(solver, node.pos.x, node.pos.y));
-    heapify_up(solver, solver->open_count++);
+// Funções auxiliares
+static void add_node(Maze* maze, Node node) {
+    maze->heap[maze->heap_count] = node;
+    maze->open[node.pos.y * maze->width + node.pos.x] = 1;
+    heapify_up(maze, maze->heap_count++);
 }
 
-static inline Node pop_min_node(MazeSolver* solver) {
-    Node min = solver->open_heap[0];
-    clear_bit(solver->open_bits, get_bit_index(solver, min.pos.x, min.pos.y));
-    solver->open_heap[0] = solver->open_heap[--solver->open_count];
-    if (solver->open_count > 0) heapify_down(solver, 0);
+static Node pop_min_node(Maze* maze) {
+    Node min = maze->heap[0];
+    maze->open[min.pos.y * maze->width + min.pos.x] = 0;
+    maze->heap[0] = maze->heap[--maze->heap_count];
+    if (maze->heap_count > 0) heapify_down(maze, 0);
     return min;
 }
 
-// Funções de verificação de estado
-static inline int is_closed(const MazeSolver* solver, short x, short y) {
-    int idx = get_bit_index(solver, x, y);
-    __builtin_prefetch(&solver->closed_bits[idx / BITS_PER_WORD]);
-    return test_bit(solver->closed_bits, idx);
+static unsigned short manhattan_distance(short x1, short y1, short x2, short y2) {
+    return abs(x1 - x2) + abs(y1 - y2);
 }
 
-static inline int is_open(const MazeSolver* solver, short x, short y) {
-    int idx = get_bit_index(solver, x, y);
-    __builtin_prefetch(&solver->open_bits[idx / BITS_PER_WORD]);
-    return test_bit(solver->open_bits, idx);
-}
-
-// Função para calcular distância Manhattan
-static inline unsigned short manhattan(short x1, short y1, short x2, short y2) {
-    return (unsigned short)(abs(x1 - x2) + abs(y1 - y2));
+// Obter timestamp em milissegundos
+static double get_time_ms(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (tv.tv_sec * 1000.0) + (tv.tv_usec / 1000.0);
 }
 
 // Funções de I/O
-static int save_maze_file(const char* filename, const MazeSolver* solver) {
-    FILE* f = fopen(filename, "w"); // Mudando para modo texto em vez de binário
+static int save_maze(const char* filename, const Maze* maze) {
+    FILE* f = fopen(filename, "w");
     if (!f) {
         fprintf(stderr, "Erro ao abrir %s para escrita: %s\n", filename, strerror(errno));
         return 0;
     }
 
-    // Alocando buffer para uma linha
-    char* line = malloc(solver->width + 2);
+    char* line = malloc(maze->width + 2);
     if (!line) {
-        fprintf(stderr, "Erro ao alocar memória para buffer de linha\n");
+        fprintf(stderr, "Erro ao alocar memória\n");
         fclose(f);
         return 0;
     }
 
-    // Escrevendo linha por linha
-    for (int y = 0; y < solver->height; y++) {
-        // Copiando e sanitizando cada caractere
-        for (int x = 0; x < solver->width; x++) {
-            char c = solver->maze_data[y * solver->width + x];
-            // Garantindo que apenas caracteres válidos sejam escritos
-            switch (c) {
-                case WALL:
-                case START:
-                case END:
-                case PATH:
-                case EMPTY:
-                    line[x] = c;
-                    break;
-                default:
-                    line[x] = EMPTY; // Caractere inválido, substituindo por espaço
-            }
+    for (int y = 0; y < maze->height; y++) {
+        for (int x = 0; x < maze->width; x++) {
+            char c = maze->map[y * maze->width + x];
+            line[x] = (c == WALL || c == START || c == END || c == PATH || c == EMPTY) ? c : EMPTY;
         }
-        line[solver->width] = '\n';
-        line[solver->width + 1] = '\0';
+        line[maze->width] = '\n';
+        line[maze->width + 1] = '\0';
         
         if (fputs(line, f) == EOF) {
-            fprintf(stderr, "Erro ao escrever linha %d em %s\n", y, filename);
+            fprintf(stderr, "Erro ao escrever em %s\n", filename);
             free(line);
             fclose(f);
             return 0;
@@ -202,17 +150,17 @@ static int save_maze_file(const char* filename, const MazeSolver* solver) {
     return 1;
 }
 
-static int save_json_file(const char* filename, const MazeSolver* solver) {
-    FILE* f = fopen(filename, "wb");
+static int save_path_json(const char* filename, const Maze* maze) {
+    FILE* f = fopen(filename, "w");
     if (!f) {
         fprintf(stderr, "Erro ao abrir %s para escrita: %s\n", filename, strerror(errno));
         return 0;
     }
 
     fprintf(f, "{\n  \"path\": [\n");
-    for (int i = solver->path_size - 1; i >= 0; i--) {
+    for (int i = maze->path_size - 1; i >= 0; i--) {
         fprintf(f, "    {\"x\": %d, \"y\": %d}%s\n",
-            solver->path[i].x, solver->path[i].y,
+            maze->path[i].x, maze->path[i].y,
             i > 0 ? "," : "");
     }
     fprintf(f, "  ]\n}\n");
@@ -221,7 +169,7 @@ static int save_json_file(const char* filename, const MazeSolver* solver) {
     return 1;
 }
 
-static char* read_maze_from_file(const char* filename, size_t* size) {
+static char* read_maze_file(const char* filename, size_t* size) {
     FILE* f = fopen(filename, "rb");
     if (!f) {
         fprintf(stderr, "Erro ao abrir arquivo %s: %s\n", filename, strerror(errno));
@@ -232,124 +180,105 @@ static char* read_maze_from_file(const char* filename, size_t* size) {
     *size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    char* maze = malloc(*size + 1);
-    if (!maze) {
-        fprintf(stderr, "Erro ao alocar memória para o labirinto\n");
+    char* data = malloc(*size + 1);
+    if (!data) {
+        fprintf(stderr, "Erro ao alocar memória\n");
         fclose(f);
         return NULL;
     }
 
-    size_t read = fread(maze, 1, *size, f);
+    size_t read_bytes = fread(data, 1, *size, f);
     fclose(f);
 
-    if (read != *size) {
-        fprintf(stderr, "Erro ao ler arquivo %s: %s\n", filename, strerror(errno));
-        free(maze);
+    if (read_bytes != *size) {
+        fprintf(stderr, "Erro ao ler arquivo %s\n", filename);
+        free(data);
         return NULL;
     }
 
-    maze[*size] = '\0';
-    return maze;
+    data[*size] = '\0';
+    return data;
 }
 
-// Função auxiliar para obter timestamp em milissegundos
-static inline double get_time_ms(void) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (tv.tv_sec * 1000.0) + (tv.tv_usec / 1000.0);
-}
-
-// Inicialização do solucionador
-static int init_solver(MazeSolver* solver, const char* maze_str) {
-    solver->width = 0;
-    solver->height = 0;
+// Inicialização do labirinto
+static int init_maze(Maze* maze, const char* data) {
+    maze->width = 0;
+    maze->height = 0;
     
-    // Calcular largura (primeira linha)
-    const char* ptr = maze_str;
+    // Calcular dimensões
+    const char* ptr = data;
     while (*ptr && *ptr != '\n') {
-        solver->width++;
+        maze->width++;
         ptr++;
     }
     
-    // Calcular altura e verificar consistência da largura
-    ptr = maze_str;
+    ptr = data;
     int line_width = 0;
     while (*ptr) {
         if (*ptr == '\n') {
-            if (line_width != solver->width && line_width != 0) {
-                fprintf(stderr, "Erro: Largura inconsistente no labirinto\n");
+            if (line_width != maze->width && line_width != 0) {
+                fprintf(stderr, "Erro: Largura inconsistente\n");
                 return 0;
             }
-            solver->height++;
+            maze->height++;
             line_width = 0;
         } else {
             line_width++;
         }
         ptr++;
     }
-    if (line_width > 0) {
-        solver->height++; // Para última linha sem \n
-    }
+    if (line_width > 0) maze->height++;
     
-    // Verificar dimensões
-    if (solver->width > MAX_SIZE || solver->height > MAX_SIZE) {
+    if (maze->width > MAX_SIZE || maze->height > MAX_SIZE) {
         fprintf(stderr, "Labirinto muito grande (máximo: %dx%d)\n", MAX_SIZE, MAX_SIZE);
         return 0;
     }
     
     // Limpar estado
-    memset(solver->closed_bits, 0, BIT_WORD_SIZE(solver->width * solver->height) * sizeof(unsigned long));
-    memset(solver->open_bits, 0, BIT_WORD_SIZE(solver->width * solver->height) * sizeof(unsigned long));
-    solver->open_count = solver->closed_count = solver->path_size = 0;
+    memset(maze->visited, 0, maze->width * maze->height);
+    memset(maze->open, 0, maze->width * maze->height);
+    maze->heap_count = maze->closed_count = maze->path_size = 0;
     
     return 1;
 }
 
 // Função principal de resolução
-static int solve_maze_internal(MazeSolver* solver, const char* maze_str, Point* start, Point* end) {
-    // Copiar e processar labirinto
-    const char* ptr = maze_str;
+static int solve_maze_internal(Maze* maze, const char* data, Point* start, Point* end) {
+    // Carregar labirinto
+    const char* ptr = data;
     int found_start = 0, found_end = 0;
     Point first_start = {-1, -1}, first_end = {-1, -1};
     
-    for (int y = 0; y < solver->height; y++) {
-        for (int x = 0; x < solver->width; x++) {
+    for (int y = 0; y < maze->height; y++) {
+        for (int x = 0; x < maze->width; x++) {
             char c = *ptr++;
             if (c == '\n') {
-                // Ajustar o ponteiro para o próximo caractere após \n
                 x--;
                 continue;
             }
             
-            solver->maze_data[y * solver->width + x] = c;
+            maze->map[y * maze->width + x] = c;
             
-            if (c == START) {
-                if (!found_start) {
-                    first_start.x = x;
-                    first_start.y = y;
-                    found_start = 1;
-                } else {
-                    // Converter outros pontos de início em espaços vazios
-                    solver->maze_data[y * solver->width + x] = EMPTY;
-                }
+            if (c == START && !found_start) {
+                first_start.x = x;
+                first_start.y = y;
+                found_start = 1;
+            } else if (c == START) {
+                maze->map[y * maze->width + x] = EMPTY;
+            } else if (c == END && !found_end) {
+                first_end.x = x;
+                first_end.y = y;
+                found_end = 1;
             } else if (c == END) {
-                if (!found_end) {
-                    first_end.x = x;
-                    first_end.y = y;
-                    found_end = 1;
-                } else {
-                    // Converter outros pontos de fim em espaços vazios
-                    solver->maze_data[y * solver->width + x] = EMPTY;
-                }
+                maze->map[y * maze->width + x] = EMPTY;
             }
         }
-        // Pular qualquer caractere restante até o próximo \n
         while (*ptr && *ptr != '\n') ptr++;
         if (*ptr == '\n') ptr++;
     }
     
     if (!found_start || !found_end) {
-        fprintf(stderr, "Erro: Início ou fim não encontrado no labirinto\n");
+        fprintf(stderr, "Erro: Início ou fim não encontrado\n");
         return 0;
     }
     
@@ -360,50 +289,50 @@ static int solve_maze_internal(MazeSolver* solver, const char* maze_str, Point* 
     Node start_node = {
         .pos = *start,
         .g = 0,
-        .h = manhattan(start->x, start->y, end->x, end->y),
+        .h = manhattan_distance(start->x, start->y, end->x, end->y),
         .parent = -1
     };
-    add_to_heap(solver, start_node);
+    add_node(maze, start_node);
     
-    // Loop principal do A*
-    while (solver->open_count > 0) {
-        Node current = pop_min_node(solver);
+    // Algoritmo A*
+    while (maze->heap_count > 0) {
+        Node current = pop_min_node(maze);
         
+        // Verificar se chegou ao destino
         if (current.pos.x == end->x && current.pos.y == end->y) {
             // Reconstruir caminho
-            int parent_idx = current.parent;
-            solver->path[solver->path_size++] = current.pos;
+            int parent_index = current.parent;
+            maze->path[maze->path_size++] = current.pos;
             
-            while (parent_idx != -1) {
-                solver->path[solver->path_size] = solver->closed_list[parent_idx].pos;
-                parent_idx = solver->closed_list[parent_idx].parent;
-                solver->path_size++;
+            while (parent_index != -1) {
+                maze->path[maze->path_size++] = maze->closed[parent_index].pos;
+                parent_index = maze->closed[parent_index].parent;
             }
             return 1;
         }
         
-        solver->closed_list[solver->closed_count] = current;
-        set_bit(solver->closed_bits, get_bit_index(solver, current.pos.x, current.pos.y));
-        int closed_idx = solver->closed_count++;
+        // Marcar como visitado
+        maze->closed[maze->closed_count] = current;
+        maze->visited[current.pos.y * maze->width + current.pos.x] = 1;
+        int closed_index = maze->closed_count++;
         
-        // Verificar vizinhos
+        // Explorar vizinhos
         for (int i = 0; i < 4; i++) {
-            const short nx = current.pos.x + dx[i];
-            const short ny = current.pos.y + dy[i];
+            short nx = current.pos.x + dx[i];
+            short ny = current.pos.y + dy[i];
             
-            if (nx >= 0 && nx < solver->width && ny >= 0 && ny < solver->height) {
-                const int idx = ny * solver->width + nx;
-                if (solver->maze_data[idx] != WALL && !is_closed(solver, nx, ny)) {
-                    const unsigned short new_g = current.g + 1;
-                    if (is_open(solver, nx, ny)) {
+            if (nx >= 0 && nx < maze->width && ny >= 0 && ny < maze->height) {
+                int index = ny * maze->width + nx;
+                if (maze->map[index] != WALL && !maze->visited[index]) {
+                    unsigned short new_g = current.g + 1;
+                    if (maze->open[index]) {
                         // Atualizar nó existente se necessário
-                        for (int j = 0; j < solver->open_count; j++) {
-                            if (solver->open_heap[j].pos.x == nx && 
-                                solver->open_heap[j].pos.y == ny) {
-                                if (new_g < solver->open_heap[j].g) {
-                                    solver->open_heap[j].g = new_g;
-                                    solver->open_heap[j].parent = closed_idx;
-                                    heapify_up(solver, j);
+                        for (int j = 0; j < maze->heap_count; j++) {
+                            if (maze->heap[j].pos.x == nx && maze->heap[j].pos.y == ny) {
+                                if (new_g < maze->heap[j].g) {
+                                    maze->heap[j].g = new_g;
+                                    maze->heap[j].parent = closed_index;
+                                    heapify_up(maze, j);
                                 }
                                 break;
                             }
@@ -413,10 +342,10 @@ static int solve_maze_internal(MazeSolver* solver, const char* maze_str, Point* 
                         Node new_node = {
                             .pos = {nx, ny},
                             .g = new_g,
-                            .h = manhattan(nx, ny, end->x, end->y),
-                            .parent = closed_idx
+                            .h = manhattan_distance(nx, ny, end->x, end->y),
+                            .parent = closed_index
                         };
-                        add_to_heap(solver, new_node);
+                        add_node(maze, new_node);
                     }
                 }
             }
@@ -427,51 +356,42 @@ static int solve_maze_internal(MazeSolver* solver, const char* maze_str, Point* 
 }
 
 // Função principal que resolve o labirinto
-TimingInfo solveMaze(const char* maze_str) {
-    TimingInfo timing = {0, 0};
-    MazeSolver solver = {0};
+Timing solve_maze(const char* data) {
+    Timing timing = {0, 0};
+    Maze maze = {0};
     Point start = {0, 0}, end = {0, 0};
     
-    double start_solve = get_time_ms();
+    double start_time = get_time_ms();
     
-    // Inicializar solver
-    if (!init_solver(&solver, maze_str)) {
+    // Inicializar labirinto
+    if (!init_maze(&maze, data)) {
         return timing;
     }
     
     // Resolver labirinto
-    int found = solve_maze_internal(&solver, maze_str, &start, &end);
+    int found = solve_maze_internal(&maze, data, &start, &end);
     if (!found) {
-        fprintf(stderr, "Nenhum caminho encontrado ou labirinto inválido!\n");
-        timing.solve_time = get_time_ms() - start_solve;
+        fprintf(stderr, "Nenhum caminho encontrado!\n");
+        timing.solve_time = get_time_ms() - start_time;
         return timing;
     }
     
-    // Marcar caminho
-    for (int i = 0; i < solver.path_size; i++) {
-        const int idx = solver.path[i].y * solver.width + solver.path[i].x;
-        const char current = solver.maze_data[idx];
+    // Marcar caminho no mapa
+    for (int i = 0; i < maze.path_size; i++) {
+        int idx = maze.path[i].y * maze.width + maze.path[i].x;
+        char current = maze.map[idx];
         if (current != START && current != END) {
-            solver.maze_data[idx] = PATH;
+            maze.map[idx] = PATH;
         }
     }
     
-    // Registrar tempo de resolução
-    timing.solve_time = get_time_ms() - start_solve;
+    timing.solve_time = get_time_ms() - start_time;
     
     // Salvar resultados
-    fprintf(stderr, "Salvando output.txt (dimensões: %dx%d)...\n", 
-            solver.width - 1, solver.height);
-    if (!save_maze_file("output.txt", &solver)) {
-        return timing;
-    }
-    
+    fprintf(stderr, "Salvando output.txt (dimensões: %dx%d)...\n", maze.width - 1, maze.height);
+    save_maze("output.txt", &maze);
     fprintf(stderr, "Salvando path.json...\n");
-    if (!save_json_file("path.json", &solver)) {
-        return timing;
-    }
-    
-    fprintf(stderr, "Arquivos salvos com sucesso!\n");
+    save_path_json("path.json", &maze);
     
     return timing;
 }
@@ -484,20 +404,19 @@ int main(int argc, char* argv[]) {
     
     double start_total = get_time_ms();
     
-    size_t maze_size;
-    char* maze = read_maze_from_file(argv[1], &maze_size);
-    if (!maze) {
+    size_t size;
+    char* data = read_maze_file(argv[1], &size);
+    if (!data) {
         return 1;
     }
     
-    TimingInfo timing = solveMaze(maze);
+    Timing timing = solve_maze(data);
     timing.total_time = get_time_ms() - start_total;
     
     printf("Tempo de resolução do labirinto: %f ms\n", timing.solve_time);
-    printf("Tempo total de execução: %f ms\n", timing.total_time);
-    printf("Tempo gasto em I/O e outras operações: %f ms\n", 
-           timing.total_time - timing.solve_time);
+    printf("Tempo total: %f ms\n", timing.total_time);
+    printf("Tempo I/O: %f ms\n", timing.total_time - timing.solve_time);
     
-    free(maze);
+    free(data);
     return 0;
-} 
+}
