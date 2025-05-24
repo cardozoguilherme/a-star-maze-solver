@@ -5,14 +5,14 @@
 #include <errno.h>
 
 // Constantes do labirinto
-#define MAX_SIZE 1000
+#define MAX_DIM 1000
 #define WALL '#'
 #define START 'S'
 #define END 'E'
 #define PATH '.'
 #define EMPTY ' '
 
-// Estruturas de dados simplificadas
+// Estruturas de dados usando alocação dinâmica
 typedef struct {
     short x, y;
 } Point;
@@ -24,15 +24,15 @@ typedef struct {
 } Node;
 
 typedef struct {
-    Node heap[MAX_SIZE];
-    Node closed[MAX_SIZE];
-    char map[MAX_SIZE * MAX_SIZE];
-    char visited[MAX_SIZE * MAX_SIZE];
-    char open[MAX_SIZE * MAX_SIZE];
-    Point path[MAX_SIZE];
-    int width, height;
-    int heap_count, closed_count;
-    int path_size;
+    Node  *heap;
+    Node  *closed;
+    Point *path;
+    char  *map;
+    char  *visited;
+    char  *open;
+    int   width, height;
+    int   heap_count, closed_count;
+    int   path_size;
 } Maze;
 
 typedef struct {
@@ -40,11 +40,16 @@ typedef struct {
     double total_time;
 } Timing;
 
-// Direções de movimento (N, L, S, O)
+// Movimentação (N, L, S, O)
 static const char dx[] = {0, 1, 0, -1};
 static const char dy[] = {-1, 0, 1, 0};
 
-// Funções heap
+static double get_time_ms(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec * 1000.0 + tv.tv_usec / 1000.0;
+}
+
 static unsigned int calc_f(const Node* node) {
     return node->g + node->h;
 }
@@ -52,7 +57,6 @@ static unsigned int calc_f(const Node* node) {
 static void heapify_up(Maze* maze, int idx) {
     Node temp = maze->heap[idx];
     unsigned int f_temp = calc_f(&temp);
-    
     while (idx > 0) {
         int parent = (idx - 1) / 2;
         if (calc_f(&maze->heap[parent]) <= f_temp) break;
@@ -66,21 +70,15 @@ static void heapify_down(Maze* maze, int idx) {
     Node temp = maze->heap[idx];
     unsigned int f_temp = calc_f(&temp);
     int half = maze->heap_count / 2;
-    
+
     while (idx < half) {
         int smallest = idx;
-        int left = 2 * idx + 1;
-        int right = left + 1;
-        
-        if (left < maze->heap_count && calc_f(&maze->heap[left]) < f_temp)
-            smallest = left;
-            
-        if (right < maze->heap_count) {
-            unsigned int f_right = calc_f(&maze->heap[right]);
-            if (f_right < (smallest == idx ? f_temp : calc_f(&maze->heap[left])))
-                smallest = right;
-        }
-        
+        int l = 2*idx + 1;
+        int r = l + 1;
+        if (l < maze->heap_count && calc_f(&maze->heap[l]) < f_temp)
+            smallest = l;
+        if (r < maze->heap_count && calc_f(&maze->heap[r]) < calc_f(&maze->heap[smallest]))
+            smallest = r;
         if (smallest == idx) break;
         maze->heap[idx] = maze->heap[smallest];
         idx = smallest;
@@ -88,11 +86,11 @@ static void heapify_down(Maze* maze, int idx) {
     maze->heap[idx] = temp;
 }
 
-// Funções auxiliares
 static void add_node(Maze* maze, Node node) {
-    maze->heap[maze->heap_count] = node;
+    int idx = maze->heap_count++;
+    maze->heap[idx] = node;
     maze->open[node.pos.y * maze->width + node.pos.x] = 1;
-    heapify_up(maze, maze->heap_count++);
+    heapify_up(maze, idx);
 }
 
 static Node pop_min_node(Maze* maze) {
@@ -107,316 +105,177 @@ static unsigned short manhattan_distance(short x1, short y1, short x2, short y2)
     return abs(x1 - x2) + abs(y1 - y2);
 }
 
-// Obter timestamp em milissegundos
-static double get_time_ms(void) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (tv.tv_sec * 1000.0) + (tv.tv_usec / 1000.0);
-}
-
-// Funções de I/O
-static int save_maze(const char* filename, const Maze* maze) {
-    FILE* f = fopen(filename, "w");
-    if (!f) {
-        fprintf(stderr, "Erro ao abrir %s para escrita: %s\n", filename, strerror(errno));
-        return 0;
-    }
-
-    char* line = malloc(maze->width + 2);
-    if (!line) {
-        fprintf(stderr, "Erro ao alocar memória\n");
-        fclose(f);
-        return 0;
-    }
-
-    for (int y = 0; y < maze->height; y++) {
-        for (int x = 0; x < maze->width; x++) {
-            char c = maze->map[y * maze->width + x];
-            line[x] = (c == WALL || c == START || c == END || c == PATH || c == EMPTY) ? c : EMPTY;
-        }
-        line[maze->width] = '\n';
-        line[maze->width + 1] = '\0';
-        
-        if (fputs(line, f) == EOF) {
-            fprintf(stderr, "Erro ao escrever em %s\n", filename);
-            free(line);
-            fclose(f);
-            return 0;
-        }
-    }
-
-    free(line);
-    fclose(f);
-    return 1;
-}
-
-static int save_path_json(const char* filename, const Maze* maze) {
-    FILE* f = fopen(filename, "w");
-    if (!f) {
-        fprintf(stderr, "Erro ao abrir %s para escrita: %s\n", filename, strerror(errno));
-        return 0;
-    }
-
-    fprintf(f, "{\n  \"path\": [\n");
-    for (int i = maze->path_size - 1; i >= 0; i--) {
-        fprintf(f, "    {\"x\": %d, \"y\": %d}%s\n",
-            maze->path[i].x, maze->path[i].y,
-            i > 0 ? "," : "");
-    }
-    fprintf(f, "  ]\n}\n");
-
-    fclose(f);
-    return 1;
-}
-
 static char* read_maze_file(const char* filename, size_t* size) {
     FILE* f = fopen(filename, "rb");
-    if (!f) {
-        fprintf(stderr, "Erro ao abrir arquivo %s: %s\n", filename, strerror(errno));
-        return NULL;
-    }
-
+    if (!f) { perror("fopen"); return NULL; }
     fseek(f, 0, SEEK_END);
     *size = ftell(f);
     fseek(f, 0, SEEK_SET);
-
     char* data = malloc(*size + 1);
-    if (!data) {
-        fprintf(stderr, "Erro ao alocar memória\n");
-        fclose(f);
-        return NULL;
-    }
-
-    size_t read_bytes = fread(data, 1, *size, f);
-    fclose(f);
-
-    if (read_bytes != *size) {
-        fprintf(stderr, "Erro ao ler arquivo %s\n", filename);
-        free(data);
-        return NULL;
-    }
-
+    if (!data) { perror("malloc"); fclose(f); return NULL; }
+    fread(data, 1, *size, f);
     data[*size] = '\0';
+    fclose(f);
     return data;
 }
 
-// Inicialização do labirinto
 static int init_maze(Maze* maze, const char* data) {
     maze->width = 0;
-    maze->height = 0;
-    
-    // Calcular dimensões
-    const char* ptr = data;
-    while (*ptr && *ptr != '\n') {
-        maze->width++;
-        ptr++;
+    const char* p = data;
+    while (*p && *p != '\n') { maze->width++; p++; }
+    int w = maze->width, h = 0, line = 0;
+    p = data;
+    while (*p) {
+        if (*p == '\n') { if (line && line != w) { fprintf(stderr, "Largura inconsistente\n"); return 0; } line = 0; h++; }
+        else line++;
+        p++;
     }
-    
-    ptr = data;
-    int line_width = 0;
-    while (*ptr) {
-        if (*ptr == '\n') {
-            if (line_width != maze->width && line_width != 0) {
-                fprintf(stderr, "Erro: Largura inconsistente\n");
-                return 0;
-            }
-            maze->height++;
-            line_width = 0;
-        } else {
-            line_width++;
-        }
-        ptr++;
-    }
-    if (line_width > 0) maze->height++;
-    
-    if (maze->width > MAX_SIZE || maze->height > MAX_SIZE) {
-        fprintf(stderr, "Labirinto muito grande (máximo: %dx%d)\n", MAX_SIZE, MAX_SIZE);
+    if (line) h++;
+    maze->height = h;
+    if (w > MAX_DIM || h > MAX_DIM) {
+        fprintf(stderr, "Labirinto muito grande (max %dx%d)\n", MAX_DIM, MAX_DIM);
         return 0;
     }
-    
-    // Limpar estado
-    memset(maze->visited, 0, maze->width * maze->height);
-    memset(maze->open, 0, maze->width * maze->height);
+    // reset counters
     maze->heap_count = maze->closed_count = maze->path_size = 0;
-    
     return 1;
 }
 
-// Função principal de resolução
 static int solve_maze_internal(Maze* maze, const char* data, Point* start, Point* end) {
-    // Carregar labirinto
-    const char* ptr = data;
-    int found_start = 0, found_end = 0;
-    Point first_start = {-1, -1}, first_end = {-1, -1};
-    
+    // carregar mapa e localizar S e E
+    const char* p = data;
+    int found_s = 0, found_e = 0;
     for (int y = 0; y < maze->height; y++) {
         for (int x = 0; x < maze->width; x++) {
-            char c = *ptr++;
-            if (c == '\n') {
-                x--;
-                continue;
-            }
-            
-            maze->map[y * maze->width + x] = c;
-            
-            if (c == START && !found_start) {
-                first_start.x = x;
-                first_start.y = y;
-                found_start = 1;
-            } else if (c == START) {
-                maze->map[y * maze->width + x] = EMPTY;
-            } else if (c == END && !found_end) {
-                first_end.x = x;
-                first_end.y = y;
-                found_end = 1;
-            } else if (c == END) {
-                maze->map[y * maze->width + x] = EMPTY;
-            }
+            char c = *p++;
+            if (c == '\n') { x--; continue; }
+            maze->map[y*maze->width + x] = c;
+            if (c == START && !found_s) { start->x = x; start->y = y; found_s = 1; }
+            if (c == END   && !found_e) {   end->x = x;   end->y = y;   found_e = 1; }
         }
-        while (*ptr && *ptr != '\n') ptr++;
-        if (*ptr == '\n') ptr++;
+        while (*p && *p != '\n') p++;
+        if (*p == '\n') p++;
     }
-    
-    if (!found_start || !found_end) {
-        fprintf(stderr, "Erro: Início ou fim não encontrado\n");
-        return 0;
-    }
-    
-    *start = first_start;
-    *end = first_end;
-    
-    // Adicionar nó inicial
-    Node start_node = {
-        .pos = *start,
-        .g = 0,
-        .h = manhattan_distance(start->x, start->y, end->x, end->y),
-        .parent = -1
-    };
-    add_node(maze, start_node);
-    
-    // Algoritmo A*
-    while (maze->heap_count > 0) {
-        Node current = pop_min_node(maze);
-        
-        // Verificar se chegou ao destino
-        if (current.pos.x == end->x && current.pos.y == end->y) {
-            // Reconstruir caminho
-            int parent_index = current.parent;
-            maze->path[maze->path_size++] = current.pos;
-            
-            while (parent_index != -1) {
-                maze->path[maze->path_size++] = maze->closed[parent_index].pos;
-                parent_index = maze->closed[parent_index].parent;
+    if (!found_s || !found_e) { fprintf(stderr, "Start/End não encontrado\n"); return 0; }
+    // iniciar A*
+    Node sn = {*start, 0, manhattan_distance(start->x,start->y,end->x,end->y), -1};
+    add_node(maze, sn);
+    while (maze->heap_count) {
+        Node cur = pop_min_node(maze);
+        if (cur.pos.x==end->x && cur.pos.y==end->y) {
+            // reconstruir caminho
+            int idx = cur.parent;
+            maze->path[maze->path_size++] = cur.pos;
+            while (idx != -1) {
+                maze->path[maze->path_size++] = maze->closed[idx].pos;
+                idx = maze->closed[idx].parent;
             }
             return 1;
         }
-        
-        // Marcar como visitado
-        maze->closed[maze->closed_count] = current;
-        maze->visited[current.pos.y * maze->width + current.pos.x] = 1;
-        int closed_index = maze->closed_count++;
-        
-        // Explorar vizinhos
-        for (int i = 0; i < 4; i++) {
-            short nx = current.pos.x + dx[i];
-            short ny = current.pos.y + dy[i];
-            
-            if (nx >= 0 && nx < maze->width && ny >= 0 && ny < maze->height) {
-                int index = ny * maze->width + nx;
-                if (maze->map[index] != WALL && !maze->visited[index]) {
-                    unsigned short new_g = current.g + 1;
-                    if (maze->open[index]) {
-                        // Atualizar nó existente se necessário
-                        for (int j = 0; j < maze->heap_count; j++) {
-                            if (maze->heap[j].pos.x == nx && maze->heap[j].pos.y == ny) {
-                                if (new_g < maze->heap[j].g) {
-                                    maze->heap[j].g = new_g;
-                                    maze->heap[j].parent = closed_index;
-                                    heapify_up(maze, j);
-                                }
-                                break;
-                            }
-                        }
-                    } else {
-                        // Adicionar novo nó
-                        Node new_node = {
-                            .pos = {nx, ny},
-                            .g = new_g,
-                            .h = manhattan_distance(nx, ny, end->x, end->y),
-                            .parent = closed_index
-                        };
-                        add_node(maze, new_node);
+        // mover para fechado
+        maze->closed[maze->closed_count] = cur;
+        maze->visited[cur.pos.y*maze->width+cur.pos.x] = 1;
+        int cidx = maze->closed_count++;
+        for (int d=0; d<4; d++) {
+            int nx = cur.pos.x+dx[d], ny = cur.pos.y+dy[d];
+            if (nx<0||nx>=maze->width||ny<0||ny>=maze->height) continue;
+            int off = ny*maze->width+nx;
+            if (maze->map[off]==WALL || maze->visited[off]) continue;
+            unsigned short ng = cur.g+1;
+            if (maze->open[off]) {
+                for (int i=0;i<maze->heap_count;i++){
+                    if (maze->heap[i].pos.x==nx && maze->heap[i].pos.y==ny && ng<maze->heap[i].g) {
+                        maze->heap[i].g=ng;
+                        maze->heap[i].parent=cidx;
+                        heapify_up(maze,i);
                     }
                 }
+            } else {
+                Node nn = {{nx,ny}, ng, manhattan_distance(nx,ny,end->x,end->y), cidx};
+                add_node(maze, nn);
             }
         }
     }
-    
-    return 0; // Caminho não encontrado
+    return 0;
 }
 
-// Função principal que resolve o labirinto
-Timing solve_maze(const char* data) {
-    Timing timing = {0, 0};
-    Maze maze = {0};
-    Point start = {0, 0}, end = {0, 0};
-    
-    double start_time = get_time_ms();
-    
-    // Inicializar labirinto
-    if (!init_maze(&maze, data)) {
-        return timing;
-    }
-    
-    // Resolver labirinto
-    int found = solve_maze_internal(&maze, data, &start, &end);
-    if (!found) {
-        fprintf(stderr, "Nenhum caminho encontrado!\n");
-        timing.solve_time = get_time_ms() - start_time;
-        return timing;
-    }
-    
-    // Marcar caminho no mapa
-    for (int i = 0; i < maze.path_size; i++) {
-        int idx = maze.path[i].y * maze.width + maze.path[i].x;
-        char current = maze.map[idx];
-        if (current != START && current != END) {
-            maze.map[idx] = PATH;
+static int save_maze(const char* fname, const Maze* maze) {
+    FILE* f = fopen(fname, "w"); if (!f){ perror("fopen"); return 0; }
+    int w=maze->width, h=maze->height;
+    char* buf = malloc(w+2);
+    for (int y=0;y<h;y++){
+        for(int x=0;x<w;x++){
+            char c = maze->map[y*w+x];
+            buf[x] = (c==WALL||c==START||c==END||c==PATH||c==EMPTY)?c:EMPTY;
         }
+        buf[w]='\n'; buf[w+1]='\0';
+        fputs(buf,f);
     }
-    
-    timing.solve_time = get_time_ms() - start_time;
-    
-    // Salvar resultados
-    fprintf(stderr, "Salvando output.txt (dimensões: %dx%d)...\n", maze.width - 1, maze.height);
-    save_maze("output.txt", &maze);
-    fprintf(stderr, "Salvando path.json...\n");
-    save_path_json("path.json", &maze);
-    
-    return timing;
+    free(buf);
+    fclose(f);
+    return 1;
+}
+
+static int save_path_json(const char* fname, const Maze* maze) {
+    FILE* f = fopen(fname, "w"); if (!f){ perror("fopen"); return 0; }
+    fprintf(f,"{\n  \"path\": [\n");
+    for(int i=maze->path_size-1;i>=0;i--) {
+        fprintf(f,"    {\"x\":%d, \"y\":%d}%s\n",
+            maze->path[i].x, maze->path[i].y, i?",":"");
+    }
+    fprintf(f,"  ]\n}\n");
+    fclose(f);
+    return 1;
+}
+
+Timing solve_maze(const char* data) {
+    Timing t={0,0};
+    Maze maze={0};
+    double t0 = get_time_ms();
+    if (!init_maze(&maze,data)) return t;
+    int cap = maze.width * maze.height;
+    // alocar dinâmico
+    maze.map     = malloc(cap);
+    maze.visited = calloc(cap,1);
+    maze.open    = calloc(cap,1);
+    maze.heap    = malloc(sizeof(Node)*cap);
+    maze.closed  = malloc(sizeof(Node)*cap);
+    maze.path    = malloc(sizeof(Point)*cap);
+    if (!maze.map||!maze.visited||!maze.open||!maze.heap||!maze.closed||!maze.path) {
+        fprintf(stderr,"Erro malloc\n"); exit(1);
+    }
+    Point s,e;
+    if (!solve_maze_internal(&maze,data,&s,&e)){
+        fprintf(stderr,"Sem caminho\n");
+    } else {
+        for(int i=0;i<maze.path_size;i++){
+            int idx = maze.path[i].y*maze.width + maze.path[i].x;
+            char c = maze.map[idx];
+            if (c!=START && c!=END) maze.map[idx] = PATH;
+        }
+        fprintf(stderr,"Salvando output.txt (%dx%d)\n",maze.width,maze.height);
+        save_maze("output.txt",&maze);
+        save_path_json("path.json",&maze);
+    }
+    t.solve_time = get_time_ms()-t0;
+    t.total_time = get_time_ms()-t0;
+    // liberar
+    free(maze.map);
+    free(maze.visited);
+    free(maze.open);
+    free(maze.heap);
+    free(maze.closed);
+    free(maze.path);
+    return t;
 }
 
 int main(int argc, char* argv[]) {
-    if (argc != 2) {
-        fprintf(stderr, "Uso: %s <arquivo_labirinto.txt>\n", argv[0]);
-        return 1;
-    }
-    
-    double start_total = get_time_ms();
-    
-    size_t size;
-    char* data = read_maze_file(argv[1], &size);
-    if (!data) {
-        return 1;
-    }
-    
-    Timing timing = solve_maze(data);
-    timing.total_time = get_time_ms() - start_total;
-    
-    printf("Tempo de resolução do labirinto: %f ms\n", timing.solve_time);
-    printf("Tempo total: %f ms\n", timing.total_time);
-    printf("Tempo I/O: %f ms\n", timing.total_time - timing.solve_time);
-    
+    if(argc!=2) { printf("Uso: %s <arquivo>\n",argv[0]); return 1; }
+    size_t sz;
+    char* data = read_maze_file(argv[1], &sz);
+    if (!data) return 1;
+    Timing t = solve_maze(data);
+    printf("Tempo resolução: %f ms\nTotal: %f ms\n", t.solve_time, t.total_time);
     free(data);
     return 0;
 }
