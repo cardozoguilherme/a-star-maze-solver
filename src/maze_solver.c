@@ -4,95 +4,132 @@
 #include <sys/time.h>
 #include <errno.h>
 
-// Constantes do labirinto
-#define MAX_DIM 1000
-#define WALL '#'
-#define START 'S'
-#define END 'E'
-#define PATH '.'
-#define EMPTY ' '
+// Constantes para representação do labirinto
+#define MAX_DIM 1000  // Dimensão máxima do labirinto (largura ou altura)
+#define WALL '#'      // Parede
+#define START 'S'     // Ponto de início
+#define END 'E'       // Ponto de chegada
+#define PATH '.'      // Caminho encontrado
+#define EMPTY ' '     // Espaço livre
 
-// Estruturas de dados usando alocação dinâmica
+// Estrutura para representar uma posição no labirinto
 typedef struct {
-    short x, y;
+    short x, y;      // Coordenadas x,y (short para economia de memória)
 } Point;
 
+// Estrutura para um nó no algoritmo A*
 typedef struct {
-    Point pos;
-    unsigned short g, h;
-    int parent;
+    Point pos;                // Posição atual no labirinto
+    unsigned short g, h;      // g = custo atual, h = heurística até o objetivo
+    int parent;              // Índice do nó pai no array closed
 } Node;
 
+// Estrutura principal do labirinto e dados do algoritmo
 typedef struct {
-    Node  *heap;
-    Node  *closed;
-    Point *path;
-    char  *map;
-    char  *visited;
-    char  *open;
-    int   *node_index;  // Novo: mapeia posições para índices no heap
-    int   width, height;
-    int   heap_count, closed_count;
-    int   path_size;
+    Node  *heap;             // Heap binário de nós a serem explorados
+    Node  *closed;           // Array de nós já explorados
+    Point *path;             // Caminho encontrado (do fim ao início)
+    char  *map;              // Matriz do labirinto
+    char  *visited;          // Matriz de células já visitadas
+    char  *open;             // Matriz de células no heap
+    int   *node_index;       // Mapeia posições aos seus índices no heap
+    int   width, height;     // Dimensões do labirinto
+    int   heap_count;        // Quantidade de nós no heap
+    int   closed_count;      // Quantidade de nós explorados
+    int   path_size;         // Tamanho do caminho encontrado
 } Maze;
 
+// Estrutura para medição de tempo
 typedef struct {
-    double solve_time;    // Tempo apenas do algoritmo A*
-    double total_time;    // Tempo total incluindo I/O
+    double solve_time;       // Tempo do algoritmo A*
+    double total_time;       // Tempo total incluindo I/O
 } Timing;
 
-// Movimentação (N, L, S, O)
+// Vetores para movimentação nos 4 vizinhos (Norte, Leste, Sul, Oeste)
 static const char dx[] = {0, 1, 0, -1};
 static const char dy[] = {-1, 0, 1, 0};
 
+/**
+ * Obtém o tempo atual em milissegundos
+ * Usado para medir performance do algoritmo
+ */
 static inline double get_time_ms(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return tv.tv_sec * 1000.0 + tv.tv_usec / 1000.0;
 }
 
+/**
+ * Calcula o valor f(n) = g(n) + h(n) para o algoritmo A*
+ * g(n) = custo do caminho até o nó
+ * h(n) = estimativa do custo até o objetivo
+ */
 static inline unsigned int calc_f(const Node* node) {
     return node->g + node->h;
 }
 
+/**
+ * Reorganiza o heap para cima após inserção
+ * Mantém a propriedade de heap mínimo baseado em f(n)
+ */
 static void heapify_up(Maze* maze, int idx) {
     Node temp = maze->heap[idx];
     int pos_idx = temp.pos.y * maze->width + temp.pos.x;
     unsigned int f_temp = calc_f(&temp);
+    
     while (idx > 0) {
-        int parent = (idx - 1) >> 1; // Divisão por 2 otimizada
+        int parent = (idx - 1) >> 1;  // Otimização: divisão por 2 usando shift
         if (calc_f(&maze->heap[parent]) <= f_temp) break;
+        
+        // Move o pai para baixo
         maze->heap[idx] = maze->heap[parent];
         maze->node_index[maze->heap[idx].pos.y * maze->width + maze->heap[idx].pos.x] = idx;
         idx = parent;
     }
+    
+    // Coloca o nó na posição final
     maze->heap[idx] = temp;
     maze->node_index[pos_idx] = idx;
 }
 
+/**
+ * Reorganiza o heap para baixo após remoção
+ * Mantém a propriedade de heap mínimo baseado em f(n)
+ */
 static void heapify_down(Maze* maze, int idx) {
     Node temp = maze->heap[idx];
     int pos_idx = temp.pos.y * maze->width + temp.pos.x;
     unsigned int f_temp = calc_f(&temp);
-    int half = maze->heap_count >> 1; // Divisão por 2 otimizada
+    int half = maze->heap_count >> 1;  // Otimização: divisão por 2 usando shift
 
     while (idx < half) {
         int smallest = idx;
-        int l = (idx << 1) + 1; // 2*idx + 1 otimizado
+        int l = (idx << 1) + 1;  // Otimização: 2*idx + 1
         int r = l + 1;
+        
+        // Encontra o menor entre pai e filhos
         if (l < maze->heap_count && calc_f(&maze->heap[l]) < f_temp)
             smallest = l;
         if (r < maze->heap_count && calc_f(&maze->heap[r]) < calc_f(&maze->heap[smallest]))
             smallest = r;
+            
         if (smallest == idx) break;
+        
+        // Move o menor filho para cima
         maze->heap[idx] = maze->heap[smallest];
         maze->node_index[maze->heap[idx].pos.y * maze->width + maze->heap[idx].pos.x] = idx;
         idx = smallest;
     }
+    
+    // Coloca o nó na posição final
     maze->heap[idx] = temp;
     maze->node_index[pos_idx] = idx;
 }
 
+/**
+ * Adiciona um novo nó ao heap
+ * Atualiza todas as estruturas de controle necessárias
+ */
 static void add_node(Maze* maze, Node node) {
     int idx = maze->heap_count++;
     int pos_idx = node.pos.y * maze->width + node.pos.x;
@@ -102,11 +139,15 @@ static void add_node(Maze* maze, Node node) {
     heapify_up(maze, idx);
 }
 
+/**
+ * Remove e retorna o nó com menor f(n) do heap
+ * Este é o próximo nó a ser explorado pelo A*
+ */
 static Node pop_min_node(Maze* maze) {
     Node min = maze->heap[0];
     int pos_idx = min.pos.y * maze->width + min.pos.x;
     maze->open[pos_idx] = 0;
-    maze->node_index[pos_idx] = -1; // Marcar como removido
+    maze->node_index[pos_idx] = -1;  // Marca como removido
     
     if (--maze->heap_count > 0) {
         maze->heap[0] = maze->heap[maze->heap_count];
@@ -116,10 +157,19 @@ static Node pop_min_node(Maze* maze) {
     return min;
 }
 
+/**
+ * Calcula a distância Manhattan entre dois pontos
+ * Esta é a heurística h(n) usada pelo A*
+ * É admissível pois nunca superestima o custo real
+ */
 static inline unsigned short manhattan_distance(short x1, short y1, short x2, short y2) {
     return (unsigned short)(abs(x1 - x2) + abs(y1 - y2));
 }
 
+/**
+ * Lê o arquivo do labirinto com tratamento de erros
+ * Retorna o conteúdo do arquivo como string
+ */
 static char* read_maze_file(const char* filename, size_t* size) {
     FILE* f = fopen(filename, "rb");
     if (!f) { perror("fopen"); return NULL; }
@@ -164,28 +214,50 @@ static char* read_maze_file(const char* filename, size_t* size) {
     return data;
 }
 
+/**
+ * Inicializa a estrutura do labirinto
+ * Calcula dimensões e verifica consistência
+ */
 static int init_maze(Maze* maze, const char* data) {
+    // Calcula a largura real do labirinto (sem contar o \n)
     maze->width = 0;
     const char* p = data;
-    while (*p && *p != '\n') { maze->width++; p++; }
+    while (*p && *p != '\n') { 
+        if (*p != '\r') maze->width++; // Ignora \r em arquivos Windows
+        p++; 
+    }
+    
     int w = maze->width, h = 0, line = 0;
     p = data;
     while (*p) {
-        if (*p == '\n') { if (line && line != w) { fprintf(stderr, "Largura inconsistente\n"); return 0; } line = 0; h++; }
-        else line++;
+        if (*p == '\n') { 
+            if (line && line != w) { 
+                fprintf(stderr, "Largura inconsistente\n"); 
+                return 0; 
+            } 
+            line = 0; 
+            h++; 
+        }
+        else if (*p != '\r') line++; // Ignora \r em arquivos Windows
         p++;
     }
     if (line) h++;
     maze->height = h;
+    
     if (w > MAX_DIM || h > MAX_DIM) {
         fprintf(stderr, "Labirinto muito grande (max %dx%d)\n", MAX_DIM, MAX_DIM);
         return 0;
     }
+    
     // reset counters
     maze->heap_count = maze->closed_count = maze->path_size = 0;
     return 1;
 }
 
+/**
+ * Implementação principal do algoritmo A*
+ * Encontra o menor caminho do ponto S ao ponto E
+ */
 static int solve_maze_internal(Maze* maze, const char* data, Point* start, Point* end, double* solve_time) {
     // carregar mapa e localizar S e E
     const char* p = data;
@@ -261,6 +333,10 @@ static int solve_maze_internal(Maze* maze, const char* data, Point* start, Point
     return 0;
 }
 
+/**
+ * Salva o labirinto resolvido em arquivo
+ * Marca o caminho encontrado com '.'
+ */
 static int save_maze(const char* fname, const Maze* maze) {
     FILE* f = fopen(fname, "w"); 
     if (!f) { 
@@ -296,6 +372,10 @@ static int save_maze(const char* fname, const Maze* maze) {
     return 1;
 }
 
+/**
+ * Salva o caminho encontrado em formato JSON
+ * Útil para visualização ou processamento posterior
+ */
 static int save_path_json(const char* fname, const Maze* maze) {
     FILE* f = fopen(fname, "w"); 
     if (!f) { 
@@ -328,6 +408,10 @@ static int save_path_json(const char* fname, const Maze* maze) {
     return 1;
 }
 
+/**
+ * Função principal de resolução
+ * Coordena todo o processo e mede os tempos
+ */
 Timing solve_maze(const char* data) {
     Timing t = {0, 0};
     double t0 = get_time_ms();
@@ -386,6 +470,10 @@ Timing solve_maze(const char* data) {
     return t;
 }
 
+/**
+ * Função main
+ * Processa argumentos e apresenta resultados
+ */
 int main(int argc, char* argv[]) {
     if(argc!=2) { printf("Uso: %s <arquivo>\n",argv[0]); return 1; }
     
@@ -395,9 +483,9 @@ int main(int argc, char* argv[]) {
     
     Timing t = solve_maze(data);
     printf("\n=== Tempos de Execução ===\n");
-    printf("Resolução A*: %.3f ms\n", t.solve_time);
-    printf("Total (com I/O): %.3f ms\n", t.total_time);
-    printf("Overhead I/O: %.3f ms\n", t.total_time - t.solve_time);
+    printf("Resolução A*: %f ms\n", t.solve_time);
+    printf("Total (com I/O): %f ms\n", t.total_time);
+    printf("Overhead I/O: %f ms\n", t.total_time - t.solve_time);
     
     free(data);
     return 0;
