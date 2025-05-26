@@ -475,17 +475,23 @@ Timing solve_maze(const char* data) {
  * Processa argumentos e apresenta resultados
  */
 int main(int argc, char* argv[]) {
-    if(argc!=2) { printf("Uso: %s <arquivo>\n",argv[0]); return 1; }
+    if(argc!=2) { 
+        fprintf(stderr, "Uso: %s <arquivo>\n",argv[0]); 
+        return 1; 
+    }
     
     size_t sz;
     char* data = read_maze_file(argv[1], &sz);
     if (!data) return 1;
     
     Timing t = solve_maze(data);
-    printf("\n=== Tempos de Execução ===\n");
+    
+    // Imprime apenas o tempo de resolução do A* para stdout
     printf("Resolução A*: %f ms\n", t.solve_time);
-    printf("Total (com I/O): %f ms\n", t.total_time);
-    printf("Overhead I/O: %f ms\n", t.total_time - t.solve_time);
+    
+    // Informações adicionais vão para stderr
+    fprintf(stderr, "Total (com I/O): %f ms\n", t.total_time);
+    fprintf(stderr, "Overhead I/O: %f ms\n", t.total_time - t.solve_time);
     
     free(data);
     return 0;

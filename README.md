@@ -2,6 +2,21 @@
 
 Este projeto implementa um solucionador de labirinto usando o algoritmo A* (A-Star). O programa encontra o menor caminho entre dois pontos em um labirinto 2D.
 
+## Estrutura do Projeto
+
+```
+.
+├── Makefile
+├── README.md
+├── arena.py         # Interface Python para o solver
+├── mazes/          # Labirintos de exemplo
+│   ├── maze_1.txt
+│   ├── maze_2.txt
+│   └── ...
+└── src/
+    └── maze_solver.c  # Implementação do A* em C
+```
+
 ## Formato do Labirinto
 
 O labirinto deve ser fornecido como um arquivo de texto com as seguintes características:
@@ -25,18 +40,23 @@ Exemplo:
 ##########
 ```
 
-## Labirintos de Exemplo
-
-O projeto inclui vários labirintos de exemplo na pasta `mazes/`:
-- `maze_1.txt` até `maze_9.txt`: Labirintos de diferentes tamanhos e complexidades
-
 ## Compilação
 
 ```bash
-make clean && make && ./maze_solver
+make clean && make
 ```
 
 ## Uso
+
+### Via Python
+
+```bash
+python arena.py <arquivo_labirinto>
+```
+
+O programa retornará apenas o tempo de execução em milissegundos.
+
+### Via C (Uso Direto)
 
 ```bash
 ./maze_solver mazes/<maze_name>.txt
@@ -48,44 +68,14 @@ O programa gera dois arquivos:
 1. `output.txt`: Labirinto com o caminho marcado com `.`
 2. `path.json`: Coordenadas do caminho em formato JSON
 
-Exemplo de saída em `output.txt`:
-```
-##########
-#S.......#
-# ######.#
-#      #.#
-# #### #.#
-# #    #.#
-# # ####.#
-#      #E#
-##########
-```
+## Implementação
 
-Exemplo de saída em `path.json`:
-```json
-{
-  "path": [
-    {"x": 1, "y": 1},
-    {"x": 2, "y": 1},
-    {"x": 3, "y": 1},
-    ...
-  ]
-}
-```
+O solver utiliza o algoritmo A* com as seguintes otimizações:
+- Heap binário para seleção eficiente do próximo nó
+- Mapeamento direto de posições para índices no heap
+- Alocação eficiente de memória
+- Heurística de distância Manhattan
 
-O programa também imprime o tempo de execução em milissegundos.
+## Performance
 
-## Estrutura do Projeto
-
-```
-.
-├── Makefile
-├── README.md
-├── mazes/
-│   ├── maze_1.txt
-│   ├── maze_2.txt
-│   └── ...
-├── src/
-│   └── maze_solver.c
-└── .gitignore
-```
+O tempo retornado é apenas o tempo de execução do algoritmo A*, excluindo operações de I/O.
