@@ -19,7 +19,7 @@ Este projeto implementa um solucionador de labirinto usando o algoritmo A* (A-St
 
 ## Formato do Labirinto
 
-O labirinto deve ser fornecido como um arquivo de texto com as seguintes características:
+O labirinto deve ser fornecido como um arquivo de texto ou string com as seguintes características:
 - Linhas separadas por `\n`
 - Caracteres válidos:
   - `#`: parede
@@ -50,11 +50,27 @@ make clean && make
 
 ### Via Python
 
+Existem duas formas de usar o programa via Python:
+
+1. Passando um arquivo de labirinto:
 ```bash
-python arena.py <arquivo_labirinto>
+python/python3 arena.py mazes/maze_1.txt
 ```
 
-O programa retornará apenas o tempo de execução em milissegundos.
+2. Passando o labirinto diretamente como string:
+```bash
+python/python3 arena.py "##########
+#S       #
+# ###### #
+#      # #
+# #### # #
+# #    # #
+# # #### #
+#      #E#
+##########"
+```
+
+Em ambos os casos, o programa retornará o tempo de execução em milissegundos.
 
 ### Via C (Uso Direto)
 
