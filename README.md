@@ -48,6 +48,21 @@ make clean && make
 
 ## Uso
 
+### Gerando Labirintos
+
+O projeto inclui um gerador de labirintos que utiliza o algoritmo de busca em profundidade com backtracking:
+
+```bash
+python/python3 maze_generator.py
+```
+
+O gerador solicitará:
+1. Número de linhas
+2. Número de colunas
+3. Sufixo para o nome do arquivo (ex: '19' gerará 'maze_19.txt')
+
+Os labirintos gerados são salvos no diretório `mazes/` e seguem o formato padrão do projeto.
+
 ### Via Python
 
 Existem duas formas de usar o programa via Python:

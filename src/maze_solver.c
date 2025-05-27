@@ -5,7 +5,7 @@
 #include <errno.h>
 
 // Constantes para representação do labirinto
-#define MAX_DIM 1000  // Dimensão máxima do labirinto (largura ou altura)
+#define MAX_DIM 10000  // Dimensão máxima do labirinto (largura ou altura)
 #define WALL '#'      // Parede
 #define START 'S'     // Ponto de início
 #define END 'E'       // Ponto de chegada
