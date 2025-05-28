@@ -26,7 +26,7 @@ typedef struct {
 
 // Estrutura principal do labirinto e dados do algoritmo
 typedef struct {
-    Node  *heap;             // Heap binário de nós a serem explorados
+    Node  *heap;             // Heap (pilha) binário de nós a serem explorados
     Node  *closed;           // Array de nós já explorados
     Point *path;             // Caminho encontrado (do fim ao início)
     char  *map;              // Matriz do labirinto
@@ -259,79 +259,116 @@ static int init_maze(Maze* maze, const char* data) {
  * Encontra o menor caminho do ponto S ao ponto E
  */
 static int solve_maze_internal(Maze* maze, const char* data, Point* start, Point* end, double* solve_time) {
-    // carregar mapa e localizar S e E
+    // Ponteiro para percorrer os dados do labirinto
     const char* p = data;
+    // Flags para controlar se encontramos início (S) e fim (E)
     int found_s = 0, found_e = 0;
+    
+    // Percorre cada posição do labirinto
     for (int y = 0; y < maze->height; y++) {
         for (int x = 0; x < maze->width; x++) {
             char c = *p++;
+            // Ignora quebras de linha
             if (c == '\n') { x--; continue; }
+            
+            // Armazena caractere no mapa
             maze->map[y*maze->width + x] = c;
-            if (c == START && !found_s) { start->x = x; start->y = y; found_s = 1; }
-            if (c == END   && !found_e) {   end->x = x;   end->y = y;   found_e = 1; }
+            
+            // Identifica S e E
+            if (c == START && !found_s) { 
+                start->x = x; start->y = y; 
+                found_s = 1; 
+            }
+            if (c == END && !found_e) { 
+                end->x = x; end->y = y; 
+                found_e = 1; 
+            }
         }
+        // Avança até próxima linha
         while (*p && *p != '\n') p++;
         if (*p == '\n') p++;
     }
-    if (!found_s || !found_e) { fprintf(stderr, "Start/End não encontrado\n"); return 0; }
     
-    // Inicialização de node_index para -1 (não está no heap)
+    // Verifica se encontrou início e fim
+    if (!found_s || !found_e) { 
+        fprintf(stderr, "Start/End não encontrado\n"); 
+        return 0; 
+    }
+    
+    // Inicializa array de índices como -1 (nenhum nó está no heap)
     memset(maze->node_index, -1, sizeof(int) * maze->width * maze->height);
     
-    // Início da medição do tempo do A*
+    // Marca tempo inicial
     double t_start = get_time_ms();
     
-    // iniciar A*
+    // Cria nó inicial:
+    // - posição = start
+    // - custo g = 0
+    // - heurística h = distância Manhattan até o fim
+    // - sem pai (-1)
     Node sn = {*start, 0, manhattan_distance(start->x,start->y,end->x,end->y), -1};
     add_node(maze, sn);
     
     while (maze->heap_count) {
+        // Remove nó com menor f(n) = g(n) + h(n)
         Node cur = pop_min_node(maze);
         int cur_pos = cur.pos.y*maze->width + cur.pos.x;
         
+        // Verifica se chegou ao objetivo
         if (cur.pos.x==end->x && cur.pos.y==end->y) {
-            // reconstruir caminho
+            // Encontrou o caminho! Reconstrói do fim até o início
             int idx = cur.parent;
             maze->path[maze->path_size++] = cur.pos;
             while (idx != -1) {
                 maze->path[maze->path_size++] = maze->closed[idx].pos;
                 idx = maze->closed[idx].parent;
             }
+            // Registra tempo e retorna sucesso
             *solve_time = get_time_ms() - t_start;
             return 1;
         }
         
-        // mover para fechado
+        // Move nó para lista fechada (já explorado)
         maze->closed[maze->closed_count] = cur;
-        maze->visited[cur_pos] = 1;
-        int cidx = maze->closed_count++;
+        maze->visited[cur_pos] = 1; // Marca como visitado
+        int cidx = maze->closed_count++; // Guarda o índice do nó na lista fechada
         
-        // Expandir nós vizinhos
+        // Explora os 4 vizinhos (Norte, Leste, Sul, Oeste)
         for (int d=0; d<4; d++) {
+            // Calcula coordenadas do vizinho
             int nx = cur.pos.x+dx[d], ny = cur.pos.y+dy[d];
+            
+            // Verifica limites do labirinto
             if (nx<0||nx>=maze->width||ny<0||ny>=maze->height) continue;
             
             int off = ny*maze->width+nx;
+            // Ignora paredes e células já visitadas
             if (maze->map[off]==WALL || maze->visited[off]) continue;
             
+            // Novo custo g = custo atual + 1
             unsigned short ng = cur.g+1;
             
             if (maze->open[off]) {
+                // Vizinho já está no heap
                 int heap_idx = maze->node_index[off];
+                // Se encontrou caminho melhor, atualiza
                 if (heap_idx != -1 && ng < maze->heap[heap_idx].g) {
                     maze->heap[heap_idx].g = ng;
                     maze->heap[heap_idx].parent = cidx;
                     heapify_up(maze, heap_idx);
                 }
             } else {
+                // Vizinho novo: cria nó e adiciona ao heap
                 Node nn = {{nx,ny}, ng, manhattan_distance(nx,ny,end->x,end->y), cidx};
                 add_node(maze, nn);
             }
         }
     }
+    
+    // Se chegou aqui, não encontrou caminho
     *solve_time = get_time_ms() - t_start;
     return 0;
-}
+} 
 
 /**
  * Salva o labirinto resolvido em arquivo

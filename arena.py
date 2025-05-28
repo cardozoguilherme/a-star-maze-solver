@@ -3,13 +3,13 @@ import subprocess
 import sys
 import tempfile
 
-def solve_maze(labyrinth: str, is_file: bool = False) -> float:
+def solve_maze(lab: str, is_file: bool = False) -> float:
     """
     Recebe um labirinto (como string ou caminho do arquivo) e retorna o tempo total em milissegundos.
     
     Args:
-        labyrinth: String contendo o labirinto ou caminho do arquivo
-        is_file: True se labyrinth é um caminho de arquivo, False se é uma string do labirinto
+        lab: String contendo o labirinto ou caminho do arquivo
+        is_file: True se lab é um caminho de arquivo, False se é uma string do labirinto
     """
     # Garante que o executável existe
     if not os.path.exists("maze_solver"):
@@ -17,12 +17,12 @@ def solve_maze(labyrinth: str, is_file: bool = False) -> float:
     
     if is_file:
         # Se for um arquivo, usa ele diretamente
-        maze_path = labyrinth
+        maze_path = lab
         temp_path = None
     else:
         # Se for string, cria arquivo temporário
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as temp:
-            temp.write(labyrinth)
+            temp.write(lab)
             temp_path = temp.name
             maze_path = temp_path
     
@@ -72,7 +72,7 @@ if __name__ == "__main__":
             maze_str = input_maze.replace('\\n', '\n')
             time_ms = solve_maze(maze_str, is_file=False)
             
-        print(f"Tempo de resolução: {time_ms} ms")
+        print(time_ms)
     except Exception as e:
         print(f"Erro: {e}", file=sys.stderr)
-        sys.exit(1) 
+        sys.exit(1)
